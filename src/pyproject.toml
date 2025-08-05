@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "ScriptHeads-CryptoPro"
+version = "1.0.0"
+description = "Sign content and files using CryptoPro GOST2012"
+authors = ["ScriptHeads Ltd."]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "3.12.2"
+fastapi = "0.116.1"
+uvicorn = "0.35.0"
+python-multipart = "0.0.20"
+requests = "2.32.4"
+
+[poetry.group.dev.dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

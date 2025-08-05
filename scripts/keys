@@ -1,0 +1,67 @@
+#!/bin/bash
+
+#
+# Instal user's certificate for sign and verify
+#
+
+cd "$(dirname "$0")"
+source colors.sh
+source functions.sh
+
+dir=`mktemp -d`
+cd "$dir"
+cat - > "bundle.zip"
+unzip -q bundle.zip
+rm bundle.zip
+
+# Check cryptopro key files
+function testprivk {
+  [ ! -f "$contShortName/header.key" ] && error "File header.key not found in $contShortName" && exit 1
+  [ ! -f "$contShortName/masks.key" ] && error "File masks.key not found in $contShortName" && exit 1
+  [ ! -f "$contShortName/masks2.key" ] && error "File masks2.key not found in $contShortName" && exit 1
+  [ ! -f "$contShortName/name.key" ] && error "File name.key not found in $contShortName" && exit 1
+  [ ! -f "$contShortName/primary.key" ] && error "File primary.key not found in $contShortName" && exit 1
+  [ ! -f "$contShortName/primary2.key" ] && error "File primary2.key not found in $contShortName" && exit 1
+}
+
+# Remove `./` from filename
+certFileName=`find -maxdepth 1 -type f \! -name . | head -n1 | xargs -I{} basename {}`
+contShortName=`find -maxdepth 1 -type d \! -name . | head -n1 | xargs -I{} basename {}`
+contFullName=`tail -c+5 "$contShortName/name.key"`
+
+if [ -n "$contShortName" ]; then
+  info "Key container short name: $contShortName"
+  testprivk
+  cp -R "$contShortName" /var/opt/cprocsp/keys/root/
+  if [ "$?" -eq "0" ]; then
+    ok "Key container installed"
+  fi
+fi
+
+
+if [ -n "$certFileName" ]; then
+	if [ ! -n "$contShortName" ]; then
+		certmgr -inst -file "$certFileName"
+		if [ "$?" -eq "0" ]; then
+			ok "Certificate installed"
+			warning "No PrivateKey Link"
+		fi
+
+	else
+		info "Key container full name: $contFullName" | iconv -fcp1251 -tutf-8
+
+		if [ -z "$1" ]; then
+			# No PIN
+			certmgr -inst -file "$certFileName" -cont '\\.\HDIMAGE\'"$contFullName"
+	  else
+			# Has PIN
+			certmgr -inst -file "$certFileName" -pin "$1" -cont '\\.\HDIMAGE\'"$contFullName"
+	  fi
+
+		if [ "$?" -eq "0" ]; then
+			ok "Certificate installed with PrivateKey Link"
+		fi
+	fi
+fi
+
+rm -rf "$dir"
