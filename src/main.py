@@ -126,6 +126,38 @@ def base64url_to_hex(base64url_string: str) -> str:
     # Конвертируем bytes в HEX
     return signature_bytes.hex().upper()
 
+def format_signature_for_provider(signature_hex: str) -> str:
+    """Форматирует подпись в формат, совместимый с поставщиком"""
+    if len(signature_hex) != 128:  # 64 байта = 128 hex символов для GOST 256
+        return signature_hex
+    
+    # Разделяем на два компонента по 32 байта каждый
+    r_component = signature_hex[:64]  # первые 32 байта
+    s_component = signature_hex[64:]  # вторые 32 байта
+    
+    # Обращаем байты в каждом компоненте и меняем их местами
+    r_reversed = ''.join(reversed([r_component[i:i+2] for i in range(0, len(r_component), 2)]))
+    s_reversed = ''.join(reversed([s_component[i:i+2] for i in range(0, len(s_component), 2)]))
+    
+    # Возвращаем в порядке s, r (swapped)
+    return s_reversed + r_reversed
+
+def parse_signature_from_provider(signature_hex: str) -> str:
+    """Парсит подпись от поставщика в наш внутренний формат"""
+    if len(signature_hex) != 128:  # 64 байта = 128 hex символов для GOST 256
+        return signature_hex
+    
+    # У поставщика: s_reversed + r_reversed
+    s_reversed = signature_hex[:64]  # первые 32 байта (это s с обращенными байтами)
+    r_reversed = signature_hex[64:]  # вторые 32 байта (это r с обращенными байтами)
+    
+    # Обращаем байты обратно
+    s_component = ''.join(reversed([s_reversed[i:i+2] for i in range(0, len(s_reversed), 2)]))
+    r_component = ''.join(reversed([r_reversed[i:i+2] for i in range(0, len(r_reversed), 2)]))
+    
+    # Возвращаем в правильном порядке r, s
+    return r_component + s_component
+
 def parse_jwt(token: str) -> tuple:
     """Парсинг JWT токена"""
     try:
@@ -142,7 +174,7 @@ def parse_jwt(token: str) -> tuple:
         raise ValueError(f"Failed to parse JWT: {str(e)}")
 
 async def create_jwt_token(payload: dict, pin: str = None) -> str:
-    """Создание JWT токена с подписью GOST3410_2012_256"""
+    """Создание JWT токена с подписью GOST3410_2012_256 (совместимый с поставщиком)"""
     try:
         # Создаем заголовок JWT
         header = {
@@ -164,20 +196,28 @@ async def create_jwt_token(payload: dict, pin: str = None) -> str:
         # Создаем сообщение для подписи
         message = f"{header_encoded}.{payload_encoded}"
         
-        # Создаем подпись
+        # Создаем подпись используя совместимый формат
         signer = await create_signer(pin)
         hashed_data = pycades.HashedData()
         hashed_data.Algorithm = pycades.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
-        hashed_data.DataEncoding = pycades.CADESCOM_STRING_TO_UCS2LE
-        hashed_data.Hash(message)
+        hashed_data.DataEncoding = pycades.CADESCOM_BASE64_TO_BINARY
+        
+        # Подготавливаем данные для хеширования так же, как при проверке
+        hash_input = base64.b64encode(message.encode('utf-8')).decode()
+        hashed_data.Hash(hash_input)
         
         # Получаем сырую подпись в HEX формате
         raw_signature = pycades.RawSignature()
         signature_hex = raw_signature.SignHash(hashed_data, signer.Certificate)
         
-        # Убираем пробелы из HEX строки и конвертируем в base64url
+        # Убираем пробелы из HEX строки
         signature_hex_clean = ''.join(signature_hex.split())
-        signature_base64url = hex_to_base64url(signature_hex_clean)
+        
+        # Форматируем подпись в формат поставщика
+        signature_hex_formatted = format_signature_for_provider(signature_hex_clean)
+        
+        # Конвертируем в base64url
+        signature_base64url = hex_to_base64url(signature_hex_formatted)
         
         # Собираем JWT
         jwt_token = f"{message}.{signature_base64url}"
@@ -188,7 +228,7 @@ async def create_jwt_token(payload: dict, pin: str = None) -> str:
         raise Exception(f"Failed to create JWT: {str(e)}")
 
 async def verify_jwt_signature(jwt_token: str, public_key_pem: str = None) -> tuple[bool, Optional[dict], Optional[str]]:
-    """Проверка подписи JWT с использованием КриптоПро"""
+    """Проверка подписи JWT с использованием КриптоПро (совместимый с поставщиком)"""
     cert_info = None
     
     try:
@@ -217,29 +257,31 @@ async def verify_jwt_signature(jwt_token: str, public_key_pem: str = None) -> tu
             cert = certificates.Item(1)
             cert_info = await certificate_info(cert)
         
-        # Создаем объект для хеширования
-        hashed_data = pycades.HashedData()
-        hashed_data.Algorithm = pycades.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
-        hashed_data.DataEncoding = pycades.CADESCOM_STRING_TO_UCS2LE
-        
-        # Хешируем сообщение (header.payload как строку)
+        # Подготавливаем данные для проверки
         message_to_hash = f"{parts[0]}.{parts[1]}"
-        hashed_data.Hash(message_to_hash)
-        
-        # Конвертируем подпись из base64url в HEX формат для проверки
         signature_base64url = parts[2]
         signature_hex = base64url_to_hex(signature_base64url)
         
-        # Создаем объект RawSignature для проверки
+        # Парсим подпись от поставщика в наш формат
+        signature_hex_parsed = parse_signature_from_provider(signature_hex)
+        
+        # Создаем хеш данных используя найденные параметры
+        hashed_data = pycades.HashedData()
+        hashed_data.Algorithm = pycades.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
+        hashed_data.DataEncoding = pycades.CADESCOM_BASE64_TO_BINARY
+        
+        # Подготавливаем данные для хеширования
+        hash_input = base64.b64encode(message_to_hash.encode('utf-8')).decode()
+        hashed_data.Hash(hash_input)
+        
+        # Проверяем подпись
         raw_signature = pycades.RawSignature()
+        raw_signature.VerifyHash(hashed_data, cert, signature_hex_parsed)
         
-        # Проверяем подпись (передаем HEX строку)
-        raw_signature.VerifyHash(hashed_data, cert, signature_hex)
-        
-        return True, cert_info, None
+        return True, cert_info, "Signature verified successfully"
         
     except Exception as e:
-        return False, cert_info, str(e)
+        return False, cert_info, f"Verification failed: {str(e)}"
 
 @app.get('/')
 async def root():
@@ -290,7 +332,7 @@ async def create_jwt(
     password: Optional[str] = Body(None)
 ):
     """
-    Создание JWT токена с подписью GOST3410_2012_256
+    Создание JWT токена с подписью GOST3410_2012_256 (совместимый с поставщиком)
     """
     if CRYPTOPRO_SIGN_PASSWORD and password != CRYPTOPRO_SIGN_PASSWORD:
         raise FastAPIHTTPException(status_code=401, detail="Incorrect password")
@@ -318,7 +360,7 @@ async def verify_jwt(
     password: Optional[str] = Body(None)
 ):
     """
-    Проверка JWT токена с подписью GOST3410_2012_256
+    Проверка JWT токена с подписью GOST3410_2012_256 (совместимый с поставщиком)
     Если public_key не передан, используется сертификат из хранилища
     """
     if CRYPTOPRO_SIGN_PASSWORD and password != CRYPTOPRO_SIGN_PASSWORD:

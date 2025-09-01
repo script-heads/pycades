@@ -4,6 +4,8 @@
 
 ```bash
 docker build --platform linux/amd64 -t scriptheads-cryptopro .
+docker tag scriptheads-cryptopro:latest cr.yandex/crptshuuct3ne1mn7rg1/scriptheads-cryptopro:v3
+docker push cr.yandex/crptshuuct3ne1mn7rg1/scriptheads-cryptopro:v3
 ```
 
 ## Запускаем в Kubernetes
