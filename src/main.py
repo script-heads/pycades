@@ -116,15 +116,19 @@ def parse_jwt(token: str) -> tuple:
         payload = json.loads(base64url_decode(parts[1]).decode('utf-8'))
         signature = base64url_decode(parts[2])
         
-        return header, payload, signature, f"{parts[0]}.{parts[1]}"
+        return header, payload, signature
     except Exception as e:
         raise ValueError(f"Failed to parse JWT: {str(e)}")
 
-async def verify_jwt_signature(message: str, signature: bytes, public_key_pem: str) -> tuple[bool, Optional[dict]]:
+async def verify_jwt_signature(jwt_token: str, public_key_pem: str) -> tuple[bool, Optional[dict]]:
     """Проверка подписи JWT с использованием КриптоПро"""
     cert_info = None
     
     try:
+        parts = jwt_token.split('.')
+        if len(parts) != 3:
+            raise ValueError("Invalid JWT format")
+        
         # Создаем сертификат из PEM
         cert = pycades.Certificate()
         
@@ -146,20 +150,21 @@ async def verify_jwt_signature(message: str, signature: bytes, public_key_pem: s
         hashed_data.DataEncoding = pycades.CADESCOM_STRING_TO_UCS2LE
         
         # Хешируем сообщение (header.payload)
-        hashed_data.Hash(message)
+        hashed_data.Hash(f"{parts[0]}.{parts[1]}")
         
         # Создаем объект RawSignature для проверки
         raw_signature = pycades.RawSignature()
         
-        # Конвертируем подпись в нужный формат
-        signature_b64 = base64.b64encode(signature).decode()
+        # Base64 подпись
+        signature = parts[2]
         
         # Проверяем подпись
-        raw_signature.VerifyHash(hashed_data, cert, signature_b64)
+        raw_signature.VerifyHash(hashed_data, cert, signature)
         
         return True, cert_info
         
     except Exception as e:
+        print(f"An error occurred: {e}")
         return False, cert_info
 
 @app.get('/')
@@ -218,7 +223,7 @@ async def verify_jwt(
     
     try:
         # Парсим JWT
-        header, payload, signature, message = parse_jwt(jwt_token)
+        header, payload, signature = parse_jwt(jwt_token)
         
         # Проверяем алгоритм
         if header.get('alg') != 'GOST3410_2012_256':
@@ -230,7 +235,7 @@ async def verify_jwt(
             )
         
         # Проверяем подпись и получаем информацию о сертификате
-        is_valid, cert_info = await verify_jwt_signature(message, signature, public_key)
+        is_valid, cert_info = await verify_jwt_signature(jwt_token, public_key)
         
         return JSONResponse(content={
             'valid': is_valid,
