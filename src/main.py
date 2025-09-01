@@ -278,7 +278,7 @@ async def verify_jwt_signature(jwt_token: str, public_key_pem: str = None) -> tu
         raw_signature = pycades.RawSignature()
         raw_signature.VerifyHash(hashed_data, cert, signature_hex_parsed)
         
-        return True, cert_info, "Signature verified successfully"
+        return True, cert_info, None
         
     except Exception as e:
         return False, cert_info, f"Verification failed: {str(e)}"
