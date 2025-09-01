@@ -46,6 +46,34 @@ async def certificate_info(cert):
     )
     return cert_info
 
+async def certificate_info_public_only(cert):
+    """Информация о сертификате без приватного ключа"""
+    cert_info = {}
+    
+    try:
+        algo = cert.PublicKey().Algorithm
+        cert_info['Algorithm'] = {
+            'FriendlyName': algo.FriendlyName,
+            'Value': algo.Value,
+        }
+    except:
+        cert_info['Algorithm'] = None
+    
+    cert_info.update(
+        {
+            'Valid': {
+                'ValidFromDate': cert.ValidFromDate,
+                'ValidToDate': cert.ValidToDate,
+            },
+            'IssuerName': await parse_meta(cert.IssuerName),
+            'SubjectName': await parse_meta(cert.SubjectName),
+            'Thumbprint': cert.Thumbprint,
+            'SerialNumber': cert.SerialNumber,
+            'HasPrivateKey': False
+        }
+    )
+    return cert_info
+
 async def retrieve_certificate_store():
     store = pycades.Store()
     store.Open(
@@ -92,46 +120,47 @@ def parse_jwt(token: str) -> tuple:
     except Exception as e:
         raise ValueError(f"Failed to parse JWT: {str(e)}")
 
-async def verify_jwt_signature(message: str, signature: bytes, public_key_pem: str) -> bool:
+async def verify_jwt_signature(message: str, signature: bytes, public_key_pem: str) -> tuple[bool, Optional[dict]]:
     """Проверка подписи JWT с использованием КриптоПро"""
+    cert_info = None
+    
     try:
-        # Создаем объект для проверки подписи
-        signed_data = pycades.SignedData()
-        
-        # Хешируем сообщение
-        hashed_data = pycades.HashedData()
-        hashed_data.Algorithm = pycades.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
-        hashed_data.DataEncoding = pycades.CADESCOM_BASE64_TO_BINARY
-        
-        # Кодируем сообщение в base64 для хеширования
-        message_b64 = base64.b64encode(message.encode('utf-8')).decode()
-        hashed_data.Hash(message_b64)
-        
-        # Загружаем публичный ключ из PEM
-        # Для этого нужно создать сертификат из PEM строки
+        # Создаем сертификат из PEM
         cert = pycades.Certificate()
         
-        # Удаляем заголовки и переводы строк из PEM
-        pem_data = public_key_pem.replace('-----BEGIN CERTIFICATE-----', '')
+        # Очищаем PEM от заголовков и форматирования
+        pem_data = public_key_pem.strip()
+        pem_data = pem_data.replace('-----BEGIN CERTIFICATE-----', '')
         pem_data = pem_data.replace('-----END CERTIFICATE-----', '')
         pem_data = pem_data.replace('\n', '').replace('\r', '').replace(' ', '')
         
         # Импортируем сертификат
         cert.Import(pem_data)
         
-        # Проверяем подпись
-        # Для JWT подпись должна быть в формате base64
+        # Получаем информацию о сертификате в любом случае
+        cert_info = await certificate_info_public_only(cert)
+        
+        # Создаем объект для хеширования
+        hashed_data = pycades.HashedData()
+        hashed_data.Algorithm = pycades.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
+        hashed_data.DataEncoding = pycades.CADESCOM_STRING_TO_UCS2LE
+        
+        # Хешируем сообщение (header.payload)
+        hashed_data.Hash(message)
+        
+        # Создаем объект RawSignature для проверки
+        raw_signature = pycades.RawSignature()
+        
+        # Конвертируем подпись в нужный формат
         signature_b64 = base64.b64encode(signature).decode()
         
-        # Создаем объект для проверки
-        raw_signature = pycades.RawSignature()
+        # Проверяем подпись
         raw_signature.VerifyHash(hashed_data, cert, signature_b64)
         
-        return True
+        return True, cert_info
         
     except Exception as e:
-        print(f"Signature verification failed: {str(e)}")
-        return False
+        return False, cert_info
 
 @app.get('/')
 async def root():
@@ -183,14 +212,6 @@ async def verify_jwt(
 ):
     """
     Проверка JWT токена с подписью GOST3410_2012_256
-    
-    Args:
-        jwt_token: JWT токен для проверки
-        public_key: Публичный ключ в формате PEM
-        password: Пароль для доступа к сервису (опционально)
-    
-    Returns:
-        JSON с результатом проверки и декодированными данными
     """
     if CRYPTOPRO_SIGN_PASSWORD and password != CRYPTOPRO_SIGN_PASSWORD:
         raise FastAPIHTTPException(status_code=401, detail="Incorrect password")
@@ -204,29 +225,24 @@ async def verify_jwt(
             return JSONResponse(
                 status_code=400,
                 content={
-                    'valid': False,
                     'error': f"Unsupported algorithm: {header.get('alg')}. Expected GOST3410_2012_256",
-                    'header': header,
-                    'payload': payload
                 }
             )
         
-        # Проверяем подпись
-        is_valid = await verify_jwt_signature(message, signature, public_key)
+        # Проверяем подпись и получаем информацию о сертификате
+        is_valid, cert_info = await verify_jwt_signature(message, signature, public_key)
         
         return JSONResponse(content={
             'valid': is_valid,
             'header': header,
             'payload': payload,
-            'algorithm': header.get('alg'),
-            'message': 'JWT signature is valid' if is_valid else 'JWT signature is invalid'
+            'certificate': cert_info
         })
         
     except ValueError as e:
         return JSONResponse(
             status_code=400,
             content={
-                'valid': False,
                 'error': str(e)
             }
         )
@@ -234,7 +250,6 @@ async def verify_jwt(
         return JSONResponse(
             status_code=500,
             content={
-                'valid': False,
                 'error': f"Internal server error: {str(e)}"
             }
         )
